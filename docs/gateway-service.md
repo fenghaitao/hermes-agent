@@ -88,6 +88,35 @@ hermes gateway list      # list profiles and their gateway status
 hermes gateway run       # run in the foreground (debugging)
 ```
 
+## Auto-start at boot (one-time setup)
+
+The unit is created by the hermes CLI (`hermes gateway install` /
+`hermes_cli/gateway.py`), **not** by `setup-hermes.sh`, and is installed as a
+systemd **user** service. Two independent conditions must both hold for it to
+come up automatically after a reboot:
+
+1. The unit is **enabled** — `systemctl --user is-enabled
+   hermes-gateway.service` → `enabled` (done by the installer).
+2. **Linger** is on for the user — otherwise the per-user systemd instance only
+   runs while you're logged in, so a bare reboot leaves the gateway down until
+   you next log in.
+
+The installer tries to enable linger automatically, but on servers it's often
+denied (non-root + polkit). Enable it once, with root:
+
+```bash
+sudo loginctl enable-linger "$(id -un)"
+```
+
+Verify:
+
+```bash
+loginctl show-user "$(id -un)" -p Linger --value      # → yes
+systemctl --user is-enabled hermes-gateway.service     # → enabled
+```
+
+With both `yes` and `enabled`, the gateway starts at boot and survives logout.
+
 ## Logs
 
 ```bash
