@@ -1061,6 +1061,17 @@ display:
   # Show [HH:MM] timestamps on user input and assistant response labels.
   # timestamps: false
 
+  # Volcengine Ark Coding-Plan usage in the CLI status bar (5h / weekly /
+  # monthly quota windows, e.g. "⏳ 5h 42% · wk 71% · mo 58%"). Off by default.
+  # A background probe polls the signed Ark OpenAPI (GetCodingPlanUsage) every
+  # refresh_seconds and caches the result, so the 1s status-bar repaint never
+  # makes a network call. Requires the repo-root usage.py and the AK/SK
+  # credentials VOLC_ACCESSKEY / VOLC_SECRETKEY in your environment (.env) —
+  # the segment is silently hidden if either is missing.
+  # ark_usage:
+  #   enabled: true
+  #   refresh_seconds: 120   # minimum 30
+
   # ───────────────────────────────────────────────────────────────────────────
   # Skin / Theme
   # ───────────────────────────────────────────────────────────────────────────

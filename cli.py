@@ -3917,6 +3917,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "compressions": 0,
             "active_background_tasks": 0,
             "active_background_processes": 0,
+            "ark_usage": "",
+            "ark_session_percent": None,
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -3937,6 +3939,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
+        # Volcengine Ark Coding-Plan usage (5h / weekly / monthly quota
+        # windows). Polled off the render thread by a background probe; absent
+        # unless display.ark_usage.enabled is set AND the VOLC_ACCESSKEY /
+        # VOLC_SECRETKEY credentials are present. Fail-silent by design.
+        try:
+            ark_cfg = (self.config.get("display", {}) or {}).get("ark_usage", {}) or {}
+            if ark_cfg.get("enabled"):
+                from agent.ark_usage_status import get_probe
+                probe = get_probe(refresh_seconds=ark_cfg.get("refresh_seconds", 120))
+                probe.start()  # no-op after the first call / when creds missing
+                ark_label = probe.short_label()
+                if ark_label:
+                    snapshot["ark_usage"] = ark_label
+                    snapshot["ark_session_percent"] = probe.session_percent()
+        except Exception:
+            pass
 
         if not agent:
             return snapshot
@@ -4217,6 +4235,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             idle_since = snapshot.get("idle_since")
             if idle_since:
                 parts.append(idle_since)
+            ark_usage = snapshot.get("ark_usage")
+            if ark_usage:
+                parts.append(f"⏳ {ark_usage}")
             if yolo_active:
                 parts.append("⚠ YOLO")
             return self._trim_status_bar_text(" │ ".join(parts), width)
@@ -4323,6 +4344,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if idle_since:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", idle_since))
+                    # Ark Coding-Plan quota; the 5h % drives the color so it
+                    # warns/criticals as the tightest window fills up.
+                    ark_usage = snapshot.get("ark_usage")
+                    if ark_usage:
+                        ark_style = self._status_bar_context_style(
+                            snapshot.get("ark_session_percent")
+                        )
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((ark_style, f"⏳ {ark_usage}"))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -8254,7 +8284,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         which would otherwise early-return before any credits showed.
         """
         if not self.agent:
-            if not self._print_nous_credits_block():
+            printed = self._print_nous_credits_block()
+            printed = self._print_ark_usage_block() or printed
+            if not printed:
                 print("(._.) No active agent -- send a message first.")
             return
 
@@ -8262,7 +8294,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         calls = agent.session_api_calls
 
         if calls == 0:
-            if not self._print_nous_credits_block():
+            printed = self._print_nous_credits_block()
+            printed = self._print_ark_usage_block() or printed
+            if not printed:
                 print("(._.) No API calls made yet in this session.")
             return
 
@@ -8361,6 +8395,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # runs at the no-agent / no-calls early-returns above). See the helper.
         self._print_nous_credits_block()
 
+        # Ark Coding-Plan quota table (agent-independent; same early-return
+        # parity as the credits block above).
+        self._print_ark_usage_block()
+
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
             for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):
@@ -8396,6 +8434,44 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         for line in lines:
             print(f"  {line}")
         return True
+
+    def _print_ark_usage_block(self) -> bool:
+        """Print the Volcengine Ark Coding-Plan quota table for ``/usage``.
+
+        Agent-independent: shown whenever VOLC_ACCESSKEY / VOLC_SECRETKEY are
+        present (the same credentials usage.py's ``dashboard`` uses). Prefers
+        the background probe's cached data; otherwise does a single off-thread
+        fetch bounded by a short timeout so a slow Ark API can't hang the
+        prompt. Returns True if it printed anything. Fail-silent on any error.
+        """
+        import os as _os
+        if not (_os.environ.get("VOLC_ACCESSKEY") and _os.environ.get("VOLC_SECRETKEY")):
+            return False
+        try:
+            from agent.ark_usage_status import get_probe
+            probe = get_probe()
+            windows = probe.windows()
+            if not windows:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+                    try:
+                        _pool.submit(probe.fetch_now).result(timeout=8.0)
+                    except (concurrent.futures.TimeoutError, Exception):
+                        pass
+                windows = probe.windows()
+            if not windows:
+                return False
+            from agent.ark_usage_status import format_timestamp, quota_bar
+            names = {"5h": "session (5h)", "wk": "weekly", "mo": "monthly"}
+            print()
+            print("  ⏳ Ark Coding-Plan Quota")
+            print(f"  {'─' * 48}")
+            for lbl, pct, reset_ts in windows:
+                name = names.get(lbl, lbl)
+                reset = format_timestamp(reset_ts)
+                print(f"  {name:<14} {pct:>6.2f}%  {quota_bar(pct, 16)}  resets {reset}")
+            return True
+        except Exception:
+            return False
 
     def _show_credits(self):
         """`/credits` — focused Nous credit balance + top-up handoff.
